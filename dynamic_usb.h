@@ -17,7 +17,7 @@ public:
 
 public slots:
     void listen();
-    void checkForEvents();  // NEW: called by timer
+    void checkForEvents();  
     void startFileCopy();
     void cancelCopy();
 
@@ -30,7 +30,7 @@ signals:
 private:
     void handleDevice(struct udev_device *dev);
     void File_Scanner(const std::string& mount_point);
-
+    bool copyFileChunked(const std::filesystem::path& source, const std::filesystem::path& destination);
     struct udev *udev_ptr;
     struct udev_monitor *monitor_ptr;
     int fd;

@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <QCoreApplication>
 
 namespace fs = std::filesystem;
 
@@ -152,6 +153,35 @@ void USBMonitor::cancelCopy()
     emit updateStatus("Cancelled");
 }
 
+// New helper for interruptible copying
+bool USBMonitor:: copyFileChunked(const fs::path& source, const fs::path& destination)
+{
+std::ifstream src(source, std::ios::binary);
+    std::ofstream dst(destination, std::ios::binary);
+    
+    if (!src.is_open() || !dst.is_open()) return false;
+
+    // 1MB buffer size
+    std::vector<char> buffer(1024 * 1024); 
+    
+    while (src.read(buffer.data(), buffer.size()) || src.gcount() > 0) {
+        // Allow the UI/Cancel signals to be processed
+        QCoreApplication::processEvents();
+
+        // Check if user clicked cancel DURING the large file copy
+        if (cancelRequested) {
+            src.close();
+            dst.close();
+            fs::remove(destination); // Delete the partial/corrupted file
+            return false;
+        }
+
+        dst.write(buffer.data(), src.gcount());
+    }
+
+    return true;
+}
+
 void USBMonitor::File_Scanner(const std::string &mount_point)
 {
     fs::path usb_path(mount_point);
@@ -229,11 +259,19 @@ void USBMonitor::File_Scanner(const std::string &mount_point)
                 folder = dest / "TextFiles";
             else
                 continue;
-
             fs::create_directories(folder);
-            fs::copy_file(file, folder / file.filename(), 
-                         fs::copy_options::overwrite_existing);
             
+            // 1. Define the target path (Fixes the "targetPath" error)
+            fs::path targetPath = folder / file.filename();
+            // 2. ONLY use the chunked copy (Removes the double copy bug)
+            if (!copyFileChunked(file, targetPath)) {
+                if (cancelRequested) {
+                    std::cout << "File copy interrupted: " << file.filename() << std::endl;
+                    return; // Exit the scanner entirely
+                } else {
+                    throw std::runtime_error("Copy failed for: " + file.string());
+                }
+            }
             copied++;
             processed += e.file_size();
 
@@ -251,7 +289,7 @@ void USBMonitor::File_Scanner(const std::string &mount_point)
 
             std::cout << "Copied: " << file.filename() << std::endl;
 
-            QThread::msleep(50);
+            QThread::msleep(20);
         }
     }
     catch(const std::exception& e)

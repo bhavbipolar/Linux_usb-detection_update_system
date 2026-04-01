@@ -25,7 +25,7 @@ signals:
 
 private:
     QProgressBar *progressBar;
-    QPushButton *startButton;
+   QPushButton *startButton;
     QPushButton *cancelButton;
     QLabel *statusLabel;
 };
