@@ -4,33 +4,30 @@ project(usb_system VERSION 1.0)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
-# 1. Find the udev library safely
+# Find libraries
 find_library(UDEV_LIB udev REQUIRED)
+find_package(Qt5 REQUIRED COMPONENTS Widgets)
+find_package(OpenSSL REQUIRED)
 
-# 2. Define your source files 
-# Including the .h file here helps IDEs like VS Code show them in the project tree
-set(SOURCES 
-    UI_Window.cpp
-    UI_Window.h
-    dynamic_usb.cpp
-    dynamic_usb.h
-    main.cpp
-)
-
-#3 .Enable Qt MOC/UIC/RCC
+# Enable Qt features
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-#4 . Add Qt Widgets package
-find_package(Qt5 REQUIRED COMPONENTS Widgets)
-#target_link_libraries(usb_system PRIVATE Qt5::Widgets)
+# Source files
+set(SOURCES 
+    include/UI_Window.h
+    include/dynamic_usb.h
+    include/Logger.h
+    src/main.cpp
+    src/UI_Window.cpp
+    src/dynamic_usb.cpp
+    src/Logger.cpp
+)
 
-# 5. Add the executable using the SOURCE list
+# Create executable
 add_executable(usb_system ${SOURCES})
 
-# 6. Link the library found in step 1
-target_link_libraries(usb_system PRIVATE udev Qt5::Widgets)
-
-
-
+# Link libraries (clean version)
+target_include_directories(usb_system PRIVATE include)
+target_link_libraries(usb_system PRIVATE ${UDEV_LIB} Qt5::Widgets OpenSSL::Crypto)

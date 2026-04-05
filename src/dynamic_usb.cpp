@@ -8,6 +8,9 @@
 #include <fstream>
 #include <sstream>
 #include <QCoreApplication>
+#include <openssl/sha.h>
+#include <iomanip>
+#include "Logger.h"
 
 namespace fs = std::filesystem;
 
@@ -22,10 +25,12 @@ USBMonitor::USBMonitor() : pollTimer(nullptr)
 
 USBMonitor::~USBMonitor()
 {
-    if(pollTimer) {
-        pollTimer->stop();
-        delete pollTimer;
+    if (pollTimer)
+    {
+        QMetaObject::invokeMethod(pollTimer, "stop", Qt::QueuedConnection);
+        pollTimer->deleteLater();
     }
+
     if(monitor_ptr) udev_monitor_unref(monitor_ptr);
     if(udev_ptr) udev_unref(udev_ptr);
 }
@@ -46,7 +51,7 @@ void USBMonitor::checkForEvents()
     pfd.fd = fd;
     pfd.events = POLLIN;
     
-    int ret = poll(&pfd, 1, 0);  // Non-blocking poll
+    int ret = poll(&pfd, 1, 100);  // Non-blocking poll
     
     if(ret > 0 && (pfd.revents & POLLIN))
     {
@@ -76,7 +81,9 @@ void USBMonitor::handleDevice(struct udev_device *dev)
             std::cout << "USB device added, waiting for mount..." << std::endl;
             
             // Wait a bit for mount
-            QThread::sleep(2);
+            QTimer::singleShot(2000, this, [this, devnode]() {
+    // move mount detection logic here if needed
+        });
             
             // Find mount point
             std::ifstream mounts("/proc/mounts");
@@ -90,7 +97,7 @@ void USBMonitor::handleDevice(struct udev_device *dev)
                 if(iss >> device >> mountpoint && device == devnode)
                 {
                     current_mount_point = mountpoint;
-                    std::cout << "USB mounted at: " << mountpoint << std::endl;
+                    Logger::log("INFO", "USB mounted at: " + mountpoint);
                     emit deviceDetected(QString::fromStdString(mountpoint));
                     return;
                 }
@@ -114,7 +121,7 @@ void USBMonitor::handleDevice(struct udev_device *dev)
                             if(fs::is_directory(entry))
                             {
                                 current_mount_point = entry.path().string();
-                                std::cout << "Found USB at: " << current_mount_point << std::endl;
+                                Logger::log("INFO", "USB mounted at: " + current_mount_point);
                                 emit deviceDetected(QString::fromStdString(current_mount_point));
                                 return;
                             }
@@ -137,18 +144,18 @@ void USBMonitor::startFileCopy()
     if(current_mount_point.empty())
     {
         emit updateStatus("No USB mounted!");
-        std::cout << "Error: No mount point" << std::endl;
+        Logger::log("INFO", "USB mounted at: " + current_mount_point);
         return;
     }
 
-    std::cout << "Starting file copy from: " << current_mount_point << std::endl;
+    Logger::log("INFO", "Starting file copy from: " + current_mount_point);
     cancelRequested = false;
     File_Scanner(current_mount_point);
 }
 
 void USBMonitor::cancelCopy()
 {
-    std::cout << "Copy cancelled" << std::endl;
+    Logger::log ("INFO", "Copy cancelled");
     cancelRequested = true;
     emit updateStatus("Cancelled");
 }
@@ -177,7 +184,13 @@ std::ifstream src(source, std::ios::binary);
         }
 
         dst.write(buffer.data(), src.gcount());
-    }
+        //corupt temporaily
+    //     // add corruption
+    //     if (rand() % 5 == 0)
+    //     {
+    //         dst << "corrupt";
+    //     }
+     }
 
     return true;
 }
@@ -198,7 +211,7 @@ void USBMonitor::File_Scanner(const std::string &mount_point)
 
     uintmax_t total = 0;
     int file_count = 0;
-    
+
     try
     {
         for(const auto &e : fs::recursive_directory_iterator(usb_path))
@@ -242,7 +255,7 @@ void USBMonitor::File_Scanner(const std::string &mount_point)
 
             fs::path file = e.path();
             std::string ext = file.extension().string();
-            
+
             for(auto& c : ext) c = std::tolower(c);
 
             fs::path folder;
@@ -259,19 +272,48 @@ void USBMonitor::File_Scanner(const std::string &mount_point)
                 folder = dest / "TextFiles";
             else
                 continue;
+
             fs::create_directories(folder);
-            
-            // 1. Define the target path (Fixes the "targetPath" error)
+
             fs::path targetPath = folder / file.filename();
-            // 2. ONLY use the chunked copy (Removes the double copy bug)
-            if (!copyFileChunked(file, targetPath)) {
-                if (cancelRequested) {
-                    std::cout << "File copy interrupted: " << file.filename() << std::endl;
-                    return; // Exit the scanner entirely
-                } else {
-                    throw std::runtime_error("Copy failed for: " + file.string());
+
+            //  Retry mechanism
+            int retries = 2;
+            bool success = false;
+
+            while (retries-- > 0 && !success)
+            {
+                // Copy
+                if (!copyFileChunked(file, targetPath))
+                {
+                    if (cancelRequested)
+                    {
+                        Logger::log("ERROR", "File copy interrupted: " + file.filename().string());
+                        return;
+                    }
                 }
+
+                // Verify
+                Logger::log("INFO", "Verifying: " + file.filename().string());
+
+                if (verifyFileIntegrity(file, targetPath))
+                {
+                    success = true;
+                    break;
+                }
+
+                // Retry
+                Logger::log("INFO", "Retrying: " + file.filename().string());
+                fs::remove(targetPath);
             }
+
+            // After retries
+            if (!success)
+            {
+                Logger::log("INFO", "Retrying: " + file.filename().string());
+                continue;
+            }
+
             copied++;
             processed += e.file_size();
 
@@ -287,7 +329,7 @@ void USBMonitor::File_Scanner(const std::string &mount_point)
 
             emit updateStatus(status);
 
-            std::cout << "Copied: " << file.filename() << std::endl;
+            std::cout << "Copied: " << file.filename().string() << std::endl;
 
             QThread::msleep(20);
         }
@@ -300,5 +342,58 @@ void USBMonitor::File_Scanner(const std::string &mount_point)
 
     emit fileScanProgress(100);
     emit updateStatus(QString("Done! Copied %1 files").arg(copied));
-    std::cout << "Copy complete!" << std::endl;
+    Logger::log("INFO", "Copy complete!");
+}
+
+std::string USBMonitor::computeSHA256(const fs::path& filePath)
+{
+    std::ifstream file(filePath, std::ios::binary);
+    if (!file) return "";
+
+    SHA256_CTX ctx;
+    SHA256_Init(&ctx);
+
+    std::vector<char> buffer(4096);
+
+    while (file.read(buffer.data(), buffer.size()) || file.gcount() > 0)
+    {
+        SHA256_Update(&ctx, buffer.data(), file.gcount());
+    }
+
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256_Final(hash, &ctx);
+
+    std::stringstream ss;
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++)
+    {
+        ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
+    }
+
+    return ss.str();
+}
+
+//further to add check for SHA-256 HASH TO VERFIY file integrity after copy, and also add a retry mechanism for failed copies.
+bool USBMonitor::verifyFileIntegrity(const fs::path& source, const fs::path& destination)
+{
+    //compute sr hash 
+    std:: string srcHash = computeSHA256(source);
+    //compute dest hash
+    std:: string destHash = computeSHA256(destination); 
+    if(srcHash.empty() || destHash.empty())
+    {
+        Logger::log("ERROR", "Hash calculation failed for: " + source.filename().string());
+    return false;
+    
+}   
+
+    if(srcHash == destHash)
+    {
+       Logger::log("INFO", "File integrity verified: " + source.filename().string());
+        return true;
+    }
+    else 
+    {
+        Logger::log("ERROR", "Hash mismatch! Source: " + srcHash + " Destination: " + destHash);
+        return false;
+    }
 }

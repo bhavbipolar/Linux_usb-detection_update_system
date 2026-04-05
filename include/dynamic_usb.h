@@ -31,6 +31,8 @@ private:
     void handleDevice(struct udev_device *dev);
     void File_Scanner(const std::string& mount_point);
     bool copyFileChunked(const std::filesystem::path& source, const std::filesystem::path& destination);
+    std::string computeSHA256(const std::filesystem::path& filePath);
+    bool verifyFileIntegrity(const std::filesystem::path& source, const std::filesystem::path& destination);
     struct udev *udev_ptr;
     struct udev_monitor *monitor_ptr;
     int fd;

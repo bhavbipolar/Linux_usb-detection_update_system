@@ -37,7 +37,7 @@ int main(int argc, char *argv[])
         if(reply == QMessageBox::Yes)
         {
             // Use QMetaObject to call across threads safely
-            QMetaObject::invokeMethod(monitor, "startFileCopy", Qt::QueuedConnection);
+           // QMetaObject::invokeMethod(monitor, "startFileCopy", Qt::QueuedConnection);
         }
     });
 
